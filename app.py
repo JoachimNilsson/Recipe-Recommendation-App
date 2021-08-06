@@ -40,7 +40,7 @@ start = time.time()
 df = ddf.read_csv("recipe_data_final_new.csv")
 
 recipes = df.compute()
-recipes = recipes.iloc[:10000]
+recipes = recipes.iloc[:100]
 recipes["ingredients"] = recipes["ingredients"].apply(convert_ingred)
 recipes["instructions"] = recipes["instructions"].apply(convert_instruct)
 recipes["ratings"] = recipes["ratings"].apply(convert_rating)
