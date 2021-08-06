@@ -9,6 +9,8 @@ import requests
 import base64
 from requests.exceptions import MissingSchema
 import ast
+import time
+from dask import dataframe as ddf
 
 
 def convert_ingred(ingredients):
@@ -32,8 +34,21 @@ def convert_rating(rating):
         return {}
 
 
-recipes = pd.read_csv("recipe_data_final_new.csv", converters={
-                      'ingredients': convert_ingred, 'instructions': convert_instruct, 'ratings': convert_rating})
+start = time.time()
+
+
+df = ddf.read_csv("recipe_data_final_new.csv")
+
+recipes = df.compute()
+recipes = recipes.iloc[:10000]
+recipes["ingredients"] = recipes["ingredients"].apply(convert_ingred)
+recipes["instructions"] = recipes["instructions"].apply(convert_instruct)
+recipes["ratings"] = recipes["ratings"].apply(convert_rating)
+
+# recipes = pd.read_csv("recipe_data_final_new.csv", converters={
+#                       'ingredients': convert_ingred, 'instructions': convert_instruct, 'ratings': convert_rating},
+#                       skiprows=1000, chunksize=1000)
+
 
 recipes = recipes.dropna(subset=['title'])
 recipes = recipes[recipes["ingredients"].apply(lambda x: len(x) != 0)]
@@ -46,6 +61,9 @@ with open('recommendations.json', 'r') as fp:
     recommendations = json.load(fp)
 
 recipes = recipes.sort_values(by='rating', ascending=False)
+
+end = time.time()
+print(end-start, "sec")
 
 
 def get_recommnded_recipes(saved_urls):
