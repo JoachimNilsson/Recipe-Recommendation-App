@@ -10,7 +10,7 @@ import base64
 from requests.exceptions import MissingSchema
 import ast
 import time
-from dask import dataframe as ddf
+import sqlite3 as sql
 
 
 def convert_ingred(ingredients):
@@ -34,33 +34,26 @@ def convert_rating(rating):
         return {}
 
 
+def convert_to_json(df):
+    df["ingredients"] = df["ingredients"].apply(convert_ingred)
+    df["instructions"] = df["instructions"].apply(convert_instruct)
+    df["ratings"] = df["ratings"].apply(convert_rating)
+    return df
+
+
 start = time.time()
+conn = sql.connect('recipes.db')
+query = """SELECT *
+            FROM recipes
+            ORDER BY rating DESC
+            LIMIT 50"""
+conn = sql.connect('recipes.db')
+initial_recipes = pd.read_sql(query, conn)
+initial_recipes = convert_to_json(initial_recipes)
 
-
-df = ddf.read_csv("recipe_data_final_new.csv")
-
-recipes = df.compute()
-recipes = recipes.iloc[:100]
-recipes["ingredients"] = recipes["ingredients"].apply(convert_ingred)
-recipes["instructions"] = recipes["instructions"].apply(convert_instruct)
-recipes["ratings"] = recipes["ratings"].apply(convert_rating)
-
-# recipes = pd.read_csv("recipe_data_final_new.csv", converters={
-#                       'ingredients': convert_ingred, 'instructions': convert_instruct, 'ratings': convert_rating},
-#                       skiprows=1000, chunksize=1000)
-
-
-recipes = recipes.dropna(subset=['title'])
-recipes = recipes[recipes["ingredients"].apply(lambda x: len(x) != 0)]
-recipes = recipes.loc[recipes["url"] != "https://www.koket.se/godfather"]
-recipes = recipes.reset_index(drop=True)
-recipes["rating"] = recipes['ratings'].apply(lambda x:
-                                             x['rating_value'] if 'rating_value' in x and x['rating_value'] else 0)
 
 with open('recommendations.json', 'r') as fp:
     recommendations = json.load(fp)
-
-recipes = recipes.sort_values(by='rating', ascending=False)
 
 end = time.time()
 print(end-start, "sec")
@@ -71,7 +64,15 @@ def get_recommnded_recipes(saved_urls):
     for url in saved_urls:
         recommended_urls.extend(recommendations.get(url, []))
     recommended_urls = list(set(recommended_urls))
-    recommended_recipes = recipes[recipes["url"].isin(recommended_urls)]
+
+    recommended_urls_string = str(tuple(recommended_urls))
+    conn = sql.connect('recipes.db')
+    query = """SELECT *
+            FROM recipes
+            WHERE url in""" + recommended_urls_string + """
+            ORDER BY rating DESC"""
+    recommended_recipes = pd.read_sql(query, conn)
+    recommended_recipes = convert_to_json(recommended_recipes)
     recommended_recipes = recommended_recipes.sort_values(
         by='rating', ascending=False)
     return recommended_recipes
@@ -159,16 +160,12 @@ app.layout = html.Div([
                                              dash_table.DataTable(
             id='table1',
             columns=[{"name": i, "id": i}
-                     for i in recipes.columns if i in show_columns],
-            # data=recipes_show.to_dict('records'),
-            # row_selectable="multi",
-            # selected_rows=[],
+                     for i in initial_recipes.columns if i in show_columns],
             editable=True,
             row_deletable=True,
             style_data={'whiteSpace': 'normal', 'height': 'auto'},
             style_table={'height': '350px', 'overflowX': 'scroll',
                          'textOverflow': 'ellipsis',
-                         # 'maxHeight': '500px',
                          'paddingTop': '2px'
                          }
         )], style={'width': '30%', 'display': 'inline-block', "margin-left": "15px"}),
@@ -176,14 +173,13 @@ app.layout = html.Div([
                            dash_table.DataTable(
             id='table2',
             columns=[{"name": i, "id": i}
-                     for i in recipes.columns if i in show_columns],
+                     for i in initial_recipes.columns if i in show_columns],
             # data=INITIAL_empty,
             editable=True,
             row_deletable=True,
             style_data={'whiteSpace': 'normal', 'height': 'auto'},
             style_table={'height': '350px', 'overflowX': 'scroll',
                          'textOverflow': 'ellipsis',
-                         # 'maxHeight': '500px',
                          'paddingTop': '2px'
                          }
         )], style={'width': '30%', 'display': 'inline-block', "margin-left": "15px"}),
@@ -191,14 +187,12 @@ app.layout = html.Div([
                            dash_table.DataTable(
             id='table3',
             columns=[{"name": i, "id": i}
-                     for i in recipes.columns if i in show_columns],
-            # data=INITIAL_empty,
+                     for i in initial_recipes.columns if i in show_columns],
             editable=True,
             row_deletable=True,
             style_data={'whiteSpace': 'normal', 'height': 'auto'},
             style_table={'height': '350px', 'overflowX': 'scroll',
                          'textOverflow': 'ellipsis',
-                         # 'maxHeight': '500px',
                          'paddingTop': '2px'
                          }
         )], style={'width': '30%', 'display': 'inline-block', "margin-left": "15px"})
@@ -234,8 +228,13 @@ def update_store_when_removed(previous_saved, previous_rec, previous_pop, curren
             else:
                 return None
         else:
-            removed_recipe = recipes.loc[recipes["url"] == removed_url].to_dict('records')[
-                0]
+            query = """SELECT *
+                    FROM recipes
+                    WHERE url == '{}'""".format(removed_url)
+            conn = sql.connect('recipes.db')
+            removed_recipe = pd.read_sql(query, conn)
+            removed_recipe = convert_to_json(
+                removed_recipe).to_dict('records')[0]
             if saved_recipes:
                 if removed_url not in [rec['url'] for rec in saved_recipes]:
                     saved_recipes.append(removed_recipe)
@@ -250,21 +249,28 @@ def update_store_when_removed(previous_saved, previous_rec, previous_pop, curren
 @app.callback(Output('table1', 'data'),
               Output('table2', 'data'),
               Output('table3', 'data'),
-              #Input('saved_recipes', 'modified_timestamp'),
               Input('saved_recipes', 'data'))
-# Input('saved_recipes', 'data'))
 def display_popular_recommended_recipes(saved_recipes):
     if saved_recipes:
         saved_urls = [rec['url'] for rec in saved_recipes]
-        recipes_without_saved = recipes[~recipes['url'].isin(saved_urls)]
+
         recommended_recipes = get_recommnded_recipes(saved_urls)
         recommended_recipes_urls = recommended_recipes["url"].tolist()
-        # Always show top 50 most popular recipes of the recipes lefft after removing saved and recommended
-        popular_recipes = recipes_without_saved[~recipes_without_saved['url'].isin(
-            recommended_recipes_urls)].iloc[:50]
+
+        urls_left_string = str(
+            tuple(set(recommended_recipes_urls+saved_urls)))
+        query = """SELECT *
+                FROM recipes
+                WHERE url not in""" + urls_left_string + """
+                ORDER BY rating DESC
+                LIMIT 50"""
+        conn = sql.connect('recipes.db')
+        popular_recipes = pd.read_sql(query, conn)
+        popular_recipes = convert_to_json(popular_recipes)
+
         return popular_recipes.to_dict('records'), recommended_recipes.to_dict('records'), saved_recipes
     else:
-        return recipes.iloc[:50].to_dict('records'), INITIAL_empty, INITIAL_empty
+        return initial_recipes.to_dict('records'), INITIAL_empty, INITIAL_empty
 
 
 @app.callback(Output('saved_recipes', 'clear_data'),
