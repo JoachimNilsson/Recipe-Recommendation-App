@@ -82,6 +82,7 @@ INITIAL_empty = []
 
 
 app = dash.Dash(__name__)
+server = app.server
 
 
 def show_ingredient(ingred):
